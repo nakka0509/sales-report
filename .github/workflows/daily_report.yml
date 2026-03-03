@@ -9,6 +9,8 @@ on:
 jobs:
   update-database:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write  # これを追加：リポジトリへのプッシュ（書き込み）権限を付与
 
     steps:
       - name: リポジトリをチェックアウト
