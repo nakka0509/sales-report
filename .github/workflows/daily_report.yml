@@ -1,0 +1,40 @@
+name: 毎日売上DB更新
+
+on:
+  schedule:
+    # 毎日 9:00 JST (= UTC 00:00) に実行
+    - cron: '0 0 * * *'
+  workflow_dispatch:  # 手動実行も可能
+
+jobs:
+  update-database:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v4
+
+      - name: Python 3.11 セットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 依存パッケージをインストール
+        run: pip install -r requirements.txt
+
+      - name: Report.py を実行（メール取得→DB更新）
+        env:
+          KIMURA_USER: ${{ secrets.KIMURA_USER }}
+          KIMURA_PASSWORD: ${{ secrets.KIMURA_PASSWORD }}
+          JA_USER: ${{ secrets.JA_USER }}
+          JA_PASSWORD: ${{ secrets.JA_PASSWORD }}
+        run: python Report.py
+        working-directory: ./
+
+      - name: 更新された売上管理表.xlsx をコミット＆プッシュ
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add "データベース/売上管理表.xlsx"
+          git diff --staged --quiet || git commit -m "自動更新: 売上DB $(date +'%Y-%m-%d %H:%M JST')"
+          git push

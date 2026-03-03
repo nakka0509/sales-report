@@ -1,0 +1,730 @@
+Attribute VB_Name = "SalesReport"
+Option Explicit
+
+' ===== フィルタ・データ取得 =====
+Sub FetchSalesData()
+    Dim wsS As Worksheet
+    Set wsS = ThisWorkbook.Sheets("検索")
+
+    ' 入力チェック
+    If Not IsDate(wsS.Range("D9").Value) Or Not IsDate(wsS.Range("D10").Value) Then
+        MsgBox "開始日と終了日を正しく入力してください。", vbExclamation, "入力エラー"
+        Exit Sub
+    End If
+
+    Dim sd As Date, ed As Date
+    sd = CDate(wsS.Range("D9").Value)
+    ed = CDate(wsS.Range("D10").Value)
+    If sd > ed Then
+        MsgBox "開始日は終了日より前にしてください。", vbExclamation, "入力エラー"
+        Exit Sub
+    End If
+
+    ' フィルタ設定
+    Dim siteFilter As String
+    siteFilter = Trim(wsS.Range("D8").Value)
+    If siteFilter = "" Then siteFilter = "すべて"
+
+    Dim dp As String, basePath As String
+    basePath = ThisWorkbook.Path
+    If InStr(1, basePath, "https", vbTextCompare) > 0 Then
+        basePath = Environ("USERPROFILE") & "\OneDrive\デスクトップ\売上メール"
+    End If
+    dp = basePath & "\データベース\売上管理表.xlsx"
+
+    Dim fso As Object
+    Set fso = CreateObject("Scripting.FileSystemObject")
+    If Not fso.FileExists(dp) Then
+        MsgBox "DBが見つかりません:" & vbCrLf & dp, vbCritical, "エラー"
+        Exit Sub
+    End If
+
+    Application.ScreenUpdating = False
+    Application.Calculation = xlCalculationManual
+    Application.StatusBar = "データ読込中..."
+
+    Dim wbD As Workbook
+    Set wbD = Workbooks.Open(dp, ReadOnly:=True)
+    Dim wsD As Worksheet
+    Set wsD = wbD.Sheets("Data")
+    Dim lr As Long
+    lr = wsD.Cells(wsD.Rows.Count, 1).End(xlUp).Row
+
+    If lr < 2 Then
+        wbD.Close False
+        GoTo Cleanup
+    End If
+
+    Dim d As Variant
+    d = wsD.Range("A1:M" & lr).Value
+    wbD.Close False
+
+    Dim cD As Long, cSrc As Long, cSt As Long, cIt As Long, cPr As Long, cQ As Long, cSb As Long
+    Dim cWt As Long, cTmax As Long, cTmin As Long
+    Dim j As Long
+
+    For j = 1 To UBound(d, 2)
+        Select Case Trim(CStr(d(1, j)))
+            Case "日付": cD = j
+            Case "取得元": cSrc = j
+            Case "店舗名": cSt = j
+            Case "品名": cIt = j
+            Case "単価": cPr = j
+            Case "数量": cQ = j
+            Case "小計": cSb = j
+            Case "天気": cWt = j
+            Case "最高気温": cTmax = j
+            Case "最低気温": cTmin = j
+        End Select
+    Next j
+
+    ' 取得元列が見つからない場合はエラー
+    If cSrc = 0 Then
+        MsgBox "データに「取得元」列が見つかりません。Report.pyを実行してデータを更新してください。", vbCritical, "列エラー"
+        GoTo Cleanup
+    End If
+
+    Dim fc As Long
+    fc = 0
+    Dim i As Long
+    Dim rd As Date
+    Dim matchSite As Boolean
+
+    For i = 2 To UBound(d, 1)
+        If IsDate(d(i, cD)) Then
+            rd = CDate(d(i, cD))
+            If rd >= sd And rd <= ed Then
+                matchSite = True
+                If siteFilter <> "すべて" Then
+                    ' 完全一致チェック（大文字小文字無視）
+                    If StrComp(Trim(CStr(d(i, cSrc))), siteFilter, vbTextCompare) <> 0 Then
+                        matchSite = False
+                    End If
+                End If
+                If matchSite Then fc = fc + 1
+            End If
+        End If
+    Next i
+
+    If fc = 0 Then
+        MsgBox "指定条件のデータがありません。", vbInformation, "結果"
+        GoTo Cleanup
+    End If
+
+    ' fd: 日付,店舗名,品名,単価,数量,小計,最高気温,最低気温
+    Dim fd() As Variant
+    ReDim fd(1 To fc, 1 To 8)
+    Dim ix As Long
+    ix = 0
+
+    For i = 2 To UBound(d, 1)
+        If IsDate(d(i, cD)) Then
+            rd = CDate(d(i, cD))
+            If rd >= sd And rd <= ed Then
+                matchSite = True
+                If siteFilter <> "すべて" Then
+                    If StrComp(Trim(CStr(d(i, cSrc))), siteFilter, vbTextCompare) <> 0 Then
+                        matchSite = False
+                    End If
+                End If
+                If matchSite Then
+                    ix = ix + 1
+                    fd(ix, 1) = rd
+                    fd(ix, 2) = d(i, cSt)
+                    fd(ix, 3) = d(i, cIt)
+                    fd(ix, 4) = d(i, cPr)
+                    fd(ix, 5) = d(i, cQ)
+                    fd(ix, 6) = d(i, cSb)
+                    fd(ix, 7) = IIf(cTmax > 0, d(i, cTmax), "")
+                    fd(ix, 8) = IIf(cTmin > 0, d(i, cTmin), "")
+                End If
+            End If
+        End If
+    Next i
+
+    Application.StatusBar = "日別成績作成中..."
+    Application.DisplayAlerts = False
+    On Error Resume Next
+    ThisWorkbook.Sheets("日別成績").Delete
+    ThisWorkbook.Sheets("トータル成績").Delete
+    ThisWorkbook.Sheets("グラフ").Delete
+    On Error GoTo 0
+    Application.DisplayAlerts = True
+
+    ' ===== 日別成績シート =====
+    Dim wsDay As Worksheet
+    Set wsDay = ThisWorkbook.Sheets.Add(After:=wsS)
+    wsDay.Name = "日別成績"
+
+    wsDay.Cells(1, 1).Value = "日付"
+    wsDay.Cells(1, 2).Value = "店舗名"
+    wsDay.Cells(1, 3).Value = "品名"
+    wsDay.Cells(1, 4).Value = "単価"
+    wsDay.Cells(1, 5).Value = "数量"
+    wsDay.Cells(1, 6).Value = "小計"
+    wsDay.Cells(1, 7).Value = "日別売上合計"
+
+    Dim dicDayTotal As Object
+    Set dicDayTotal = CreateObject("Scripting.Dictionary")
+    Dim k As String
+    For i = 1 To fc
+        k = Format(fd(i, 1), "yyyymmdd") & "|" & CStr(fd(i, 2))
+        If dicDayTotal.Exists(k) Then
+            dicDayTotal(k) = dicDayTotal(k) + CDbl(fd(i, 6))
+        Else
+            dicDayTotal.Add k, CDbl(fd(i, 6))
+        End If
+    Next i
+
+    Dim od() As Variant
+    ReDim od(1 To fc, 1 To 7)
+    For i = 1 To fc
+        od(i, 1) = fd(i, 1)
+        od(i, 2) = fd(i, 2)
+        od(i, 3) = fd(i, 3)
+        od(i, 4) = fd(i, 4)
+        od(i, 5) = fd(i, 5)
+        od(i, 6) = fd(i, 6)
+        k = Format(fd(i, 1), "yyyymmdd") & "|" & CStr(fd(i, 2))
+        od(i, 7) = dicDayTotal(k)
+    Next i
+
+    wsDay.Range("A2").Resize(fc, 7).Value = od
+
+    ' ソート
+    With wsDay.Sort
+        .SortFields.Clear
+        .SortFields.Add Key:=wsDay.Range("A2:A" & fc + 1), SortOn:=xlSortOnValues, Order:=xlAscending, DataOption:=xlSortNormal
+        .SortFields.Add Key:=wsDay.Range("B2:B" & fc + 1), SortOn:=xlSortOnValues, Order:=xlAscending, DataOption:=xlSortNormal
+        .SortFields.Add Key:=wsDay.Range("C2:C" & fc + 1), SortOn:=xlSortOnValues, Order:=xlAscending, CustomOrder:="和花,切花"
+        .SetRange wsDay.Range("A1:G" & fc + 1)
+        .Header = xlYes
+        .MatchCase = False
+        .Orientation = xlTopToBottom
+        .SortMethod = xlPinYin
+        .Apply
+    End With
+
+    Call StyleSheet(wsDay, fc + 1, 7)
+    wsDay.Range("A2:A" & fc + 1).NumberFormat = "m/d"
+    wsDay.Range("D2:G" & fc + 1).NumberFormat = "#,##0"
+
+    ' 空行挿入 (下から処理)
+    Dim r As Long
+    For r = fc + 1 To 3 Step -1
+        If wsDay.Cells(r, 1).Value <> wsDay.Cells(r - 1, 1).Value And wsDay.Cells(r - 1, 1).Value <> "" Then
+            wsDay.Rows(r).Insert Shift:=xlDown
+            wsDay.Rows(r).Interior.ColorIndex = xlNone
+            wsDay.Rows(r).Borders.LineStyle = xlNone
+        End If
+    Next r
+
+    ' セル結合
+    Dim newLastR As Long
+    newLastR = wsDay.Cells(wsDay.Rows.Count, 3).End(xlUp).Row
+    Call MergeConsecutive(wsDay, 1, 2, newLastR) ' 日付
+    Call MergeConsecutive(wsDay, 2, 2, newLastR) ' 店舗名
+    Call MergeConsecutive(wsDay, 7, 2, newLastR) ' 日別売上合計
+
+    ' 結合後に縞模様を再適用
+    Call ApplyStripeColors(wsDay, 2, newLastR, 7)
+
+    Application.StatusBar = "トータル成績作成中..."
+
+    ' ===== トータル成績シート =====
+    Dim wsTot As Worksheet
+    Set wsTot = ThisWorkbook.Sheets.Add(After:=wsDay)
+    wsTot.Name = "トータル成績"
+
+    wsTot.Cells(1, 1).Value = "品名"
+    wsTot.Cells(1, 2).Value = "単価"
+    wsTot.Cells(1, 3).Value = "数量"
+    wsTot.Cells(1, 4).Value = "小計"
+    wsTot.Cells(1, 5).Value = "トータル売上"
+
+    Dim dicSub As Object, dicQty As Object
+    Set dicSub = CreateObject("Scripting.Dictionary")
+    Set dicQty = CreateObject("Scripting.Dictionary")
+    Dim oT As Double
+    oT = 0
+
+    For i = 1 To fc
+        k = CStr(fd(i, 3)) & "|" & CStr(fd(i, 4))
+        If dicSub.Exists(k) Then
+            dicSub(k) = dicSub(k) + CDbl(fd(i, 6))
+            dicQty(k) = dicQty(k) + CLng(fd(i, 5))
+        Else
+            dicSub.Add k, CDbl(fd(i, 6))
+            dicQty.Add k, CLng(fd(i, 5))
+        End If
+        oT = oT + CDbl(fd(i, 6))
+    Next i
+
+    Dim ni As Long
+    ni = dicSub.Count
+    Dim ak As Variant, av As Variant
+    ak = dicSub.Keys
+    av = dicSub.Items
+
+    Dim ot2() As Variant
+    ReDim ot2(1 To ni, 1 To 5)
+    Dim pts() As String
+
+    For i = 0 To ni - 1
+        pts = Split(ak(i), "|")
+        ot2(i + 1, 1) = pts(0)
+        ot2(i + 1, 2) = CLng(pts(1))
+        ot2(i + 1, 3) = dicQty(ak(i))
+        ot2(i + 1, 4) = av(i)
+        ot2(i + 1, 5) = oT
+    Next i
+
+    wsTot.Range("A2").Resize(ni, 5).Value = ot2
+
+    With wsTot.Sort
+        .SortFields.Clear
+        .SortFields.Add Key:=wsTot.Range("A2:A" & ni + 1), SortOn:=xlSortOnValues, Order:=xlAscending, CustomOrder:="和花,切花"
+        .SortFields.Add Key:=wsTot.Range("B2:B" & ni + 1), SortOn:=xlSortOnValues, Order:=xlAscending, DataOption:=xlSortNormal
+        .SetRange wsTot.Range("A1:E" & ni + 1)
+        .Header = xlYes
+        .MatchCase = False
+        .Orientation = xlTopToBottom
+        .SortMethod = xlPinYin
+        .Apply
+    End With
+
+    Call StyleSheet(wsTot, ni + 1, 5)
+    wsTot.Range("B2:E" & ni + 1).NumberFormat = "#,##0"
+
+    Call MergeConsecutive(wsTot, 1, 2, ni + 1) ' 品名
+    Call MergeConsecutive(wsTot, 5, 2, ni + 1) ' トータル売上
+    Call ApplyStripeColors(wsTot, 2, ni + 1, 5)
+
+    ' ===== グラフシート =====
+    Application.StatusBar = "グラフ作成中..."
+    Call CreateChartSheet(wsS, fd, fc, sd, ed, siteFilter)
+
+    wsS.Range("D14").Value = "期間: " & Format(sd, "yyyy/mm/dd") & " - " & Format(ed, "yyyy/mm/dd")
+    wsS.Range("D15").Value = "対象: " & fc & " 件 / 品目: " & ni & " 種類"
+    wsS.Range("D16").Value = "総売上: " & Format(oT, "#,##0") & " 円"
+    wsS.Range("D14:D16").Font.Size = 11
+    wsS.Range("D16").Font.Bold = True
+    wsS.Range("D16").Font.Color = RGB(31, 78, 120)
+
+    wsS.Activate
+    MsgBox "完了! " & fc & "件取得 (" & siteFilter & ")", vbInformation, "レポート生成完了"
+
+Cleanup:
+    Application.ScreenUpdating = True
+    Application.Calculation = xlCalculationAutomatic
+    Application.StatusBar = False
+End Sub
+
+' ===== グラフシート作成 =====
+Sub CreateChartSheet(wsS As Worksheet, fd As Variant, fc As Long, sd As Date, ed As Date, siteFilter As String)
+    Dim dicDate As Object, dicTemp As Object, dicTempCnt As Object
+    Set dicDate = CreateObject("Scripting.Dictionary")
+    Set dicTemp = CreateObject("Scripting.Dictionary")
+    Set dicTempCnt = CreateObject("Scripting.Dictionary")
+
+    Dim i As Long, dk As String
+    For i = 1 To fc
+        dk = Format(fd(i, 1), "yyyy/mm/dd")
+        If dicDate.Exists(dk) Then
+            dicDate(dk) = dicDate(dk) + CDbl(fd(i, 6))
+        Else
+            dicDate.Add dk, CDbl(fd(i, 6))
+            dicTemp.Add dk, 0
+            dicTempCnt.Add dk, 0
+        End If
+        If fd(i, 7) <> "" And IsNumeric(fd(i, 7)) Then
+            dicTemp(dk) = dicTemp(dk) + CDbl(fd(i, 7))
+            dicTempCnt(dk) = dicTempCnt(dk) + 1
+        End If
+    Next i
+
+    Dim nDates As Long
+    nDates = dicDate.Count
+    If nDates = 0 Then Exit Sub
+
+    Dim wsG As Worksheet
+    Set wsG = ThisWorkbook.Sheets.Add(After:=ThisWorkbook.Sheets(ThisWorkbook.Sheets.Count))
+    wsG.Name = "グラフ"
+    wsG.Tab.Color = RGB(31, 78, 120)
+    wsG.Columns("A").ColumnWidth = 3
+
+    ' タイトル
+    wsG.Range("B2").Value = "売上・気温グラフ"
+    wsG.Range("B2").Font.Size = 16
+    wsG.Range("B2").Font.Bold = True
+    wsG.Range("B2").Font.Color = RGB(31, 78, 120)
+
+    ' プルダウン
+    wsG.Range("B4").Value = "集計軸:"
+    wsG.Range("B4").Font.Bold = True
+    wsG.Range("B4").Font.Size = 11
+
+    ' 店舗名と品名のリストを収集
+    Dim dicStores As Object, dicItems As Object
+    Set dicStores = CreateObject("Scripting.Dictionary")
+    Set dicItems = CreateObject("Scripting.Dictionary")
+    For i = 1 To fc
+        If Not dicStores.Exists(CStr(fd(i, 2))) Then dicStores.Add CStr(fd(i, 2)), 1
+        If Not dicItems.Exists(CStr(fd(i, 3))) Then dicItems.Add CStr(fd(i, 3)), 1
+    Next i
+
+    Dim fullList As String
+    Dim kv As Variant
+    fullList = "日付別(全体)"
+    For Each kv In dicStores.Keys
+        fullList = fullList & "," & CStr(kv)
+    Next kv
+    For Each kv In dicItems.Keys
+        fullList = fullList & "," & CStr(kv)
+    Next kv
+
+    wsG.Range("C4").Value = "日付別(全体)"
+    wsG.Range("C4").Font.Size = 11
+    wsG.Range("C4").Interior.Color = RGB(255, 255, 255)
+    With wsG.Range("C4").Borders
+        .LineStyle = xlContinuous
+        .Color = RGB(31, 78, 120)
+        .Weight = xlThin
+    End With
+    wsG.Columns("C").ColumnWidth = 18
+
+    Dim vld As Validation
+    Set vld = wsG.Range("C4").Validation
+    vld.Delete
+    vld.Add Type:=xlValidateList, AlertStyle:=xlValidAlertStop, Operator:=xlBetween, Formula1:=fullList
+    vld.ShowError = True
+
+    ' 反映ボタン
+    Dim btn As Object
+    Set btn = wsG.Shapes.AddShape(5, wsG.Range("D4").Left + 5, wsG.Range("D4").Top + 3, 70, 28)
+    btn.Name = "btnUpdateChart"
+    btn.TextFrame.Characters().Text = "反映"
+    btn.TextFrame.Characters().Font.Size = 12
+    btn.TextFrame.Characters().Font.Bold = True
+    btn.TextFrame.Characters().Font.ColorIndex = 2
+    btn.Fill.ForeColor.RGB = RGB(31, 78, 120)
+    btn.Line.Visible = False
+    btn.TextFrame.HorizontalAlignment = 2
+    btn.TextFrame.VerticalAlignment = 3
+    btn.OnAction = "UpdateChart"
+
+    ' 集計テーブル（P列以降 = 非表示）
+    Dim col As Long
+    col = 16 ' P列
+    wsG.Cells(1, col).Value = "日付"
+    wsG.Cells(1, col + 1).Value = "売上金額"
+    wsG.Cells(1, col + 2).Value = "最高気温"
+
+    Dim dkeys As Variant
+    dkeys = dicDate.Keys
+    ' 日付順ソート（バブルソート）
+    Dim ii As Long, jj As Long, tmp As Variant
+    For ii = 0 To UBound(dkeys) - 1
+        For jj = 0 To UBound(dkeys) - 1 - ii
+            If CDate(dkeys(jj)) > CDate(dkeys(jj + 1)) Then
+                tmp = dkeys(jj): dkeys(jj) = dkeys(jj + 1): dkeys(jj + 1) = tmp
+            End If
+        Next jj
+    Next ii
+
+    Dim nChart As Long
+    nChart = 0
+    For i = 0 To UBound(dkeys)
+        nChart = nChart + 1
+        wsG.Cells(nChart + 1, col).Value = dkeys(i)
+        wsG.Cells(nChart + 1, col + 1).Value = dicDate(dkeys(i))
+        If dicTempCnt(dkeys(i)) > 0 Then
+            wsG.Cells(nChart + 1, col + 2).Value = dicTemp(dkeys(i)) / dicTempCnt(dkeys(i))
+        Else
+            wsG.Cells(nChart + 1, col + 2).Value = ""
+        End If
+    Next i
+
+    ' グラフ作成
+    Dim chtObj As ChartObject
+    Set chtObj = wsG.ChartObjects.Add(Left:=wsG.Range("B6").Left, Top:=wsG.Range("B6").Top, Width:=700, Height:=380)
+    chtObj.Name = "SalesChart"
+
+    Dim cht As Chart
+    Set cht = chtObj.Chart
+    cht.ChartType = xlColumnClustered
+    cht.SetSourceData Source:=wsG.Range(wsG.Cells(1, col), wsG.Cells(nChart + 1, col + 2))
+
+    cht.SeriesCollection(1).Name = "売上金額"
+    cht.SeriesCollection(1).ChartType = xlColumnClustered
+    cht.SeriesCollection(1).Format.Fill.ForeColor.RGB = RGB(31, 78, 120)
+
+    If cht.SeriesCollection.Count >= 2 Then
+        cht.SeriesCollection(2).Name = "最高気温"
+        cht.SeriesCollection(2).ChartType = xlLine
+        cht.SeriesCollection(2).AxisGroup = xlSecondary
+        cht.SeriesCollection(2).Format.Line.ForeColor.RGB = RGB(255, 102, 0)
+        cht.SeriesCollection(2).Format.Line.Weight = 2.5
+    End If
+
+    cht.HasTitle = True
+    cht.ChartTitle.Text = "売上金額・気温 (" & Format(sd, "mm/dd") & "～" & Format(ed, "mm/dd") & ") " & siteFilter
+    cht.ChartTitle.Font.Size = 13
+    cht.ChartTitle.Font.Bold = True
+
+    cht.Axes(xlValue, xlPrimary).HasTitle = True
+    cht.Axes(xlValue, xlPrimary).AxisTitle.Text = "売上金額 (円)"
+    cht.Axes(xlValue, xlPrimary).TickLabels.NumberFormat = "#,##0"
+    If cht.SeriesCollection.Count >= 2 Then
+        cht.Axes(xlValue, xlSecondary).HasTitle = True
+        cht.Axes(xlValue, xlSecondary).AxisTitle.Text = "気温 (℃)"
+    End If
+
+    cht.HasLegend = True
+    cht.Legend.Position = xlLegendPositionBottom
+    cht.PlotArea.Interior.Color = RGB(245, 248, 252)
+    cht.ChartArea.Border.LineStyle = xlContinuous
+    cht.ChartArea.Border.Color = RGB(180, 198, 220)
+
+    ' P列以降を非表示
+    wsG.Columns(col).Hidden = True
+    wsG.Columns(col + 1).Hidden = True
+    wsG.Columns(col + 2).Hidden = True
+
+    wsG.Activate
+    ActiveWindow.DisplayGridlines = False
+End Sub
+
+' ===== グラフ更新（反映ボタン） =====
+Sub UpdateChart()
+    Dim wsG As Worksheet
+    On Error GoTo ErrExit
+    Set wsG = ThisWorkbook.Sheets("グラフ")
+    On Error GoTo 0
+
+    Dim axis As String
+    axis = Trim(wsG.Range("C4").Value)
+    If axis = "" Then axis = "日付別(全体)"
+
+    Dim wsDay As Worksheet
+    On Error Resume Next
+    Set wsDay = ThisWorkbook.Sheets("日別成績")
+    On Error GoTo 0
+    If wsDay Is Nothing Then
+        MsgBox "先に「データ取得」を実行してください。", vbExclamation
+        Exit Sub
+    End If
+
+    Dim lastR As Long
+    lastR = wsDay.Cells(wsDay.Rows.Count, 3).End(xlUp).Row
+    If lastR < 2 Then Exit Sub
+
+    Dim chtObj As ChartObject
+    On Error Resume Next
+    Set chtObj = wsG.ChartObjects("SalesChart")
+    On Error GoTo 0
+    If chtObj Is Nothing Then Exit Sub
+
+    Dim cht As Chart
+    Set cht = chtObj.Chart
+
+    Dim dicAgg As Object, dicTmpAgg As Object
+    Set dicAgg = CreateObject("Scripting.Dictionary")
+    Set dicTmpAgg = CreateObject("Scripting.Dictionary")
+
+    Dim i As Long
+    Dim grpKey As String, curDate As String, curStore As String
+    curDate = "": curStore = ""
+
+    For i = 2 To lastR
+        If wsDay.Cells(i, 1).Value <> "" Then curDate = CStr(wsDay.Cells(i, 1).Value)
+        If wsDay.Cells(i, 2).Value <> "" Then curStore = CStr(wsDay.Cells(i, 2).Value)
+        Dim cellItem As String
+        cellItem = CStr(wsDay.Cells(i, 3).Value)
+        If wsDay.Cells(i, 6).Value = "" Then GoTo NextRow
+        Dim cellSub As Double
+        cellSub = CDbl(wsDay.Cells(i, 6).Value)
+
+        Select Case True
+            Case axis = "日付別(全体)": grpKey = curDate
+            Case StrComp(axis, curStore, vbTextCompare) = 0: grpKey = curStore
+            Case StrComp(axis, cellItem, vbTextCompare) = 0: grpKey = cellItem
+            Case Else: grpKey = ""
+        End Select
+
+        If grpKey = "" Then GoTo NextRow
+
+        If dicAgg.Exists(grpKey) Then
+            dicAgg(grpKey) = dicAgg(grpKey) + cellSub
+        Else
+            dicAgg.Add grpKey, cellSub
+        End If
+NextRow:
+    Next i
+
+    Dim col As Long
+    col = 16
+    wsG.Cells(1, col).Value = "軸"
+    wsG.Cells(1, col + 1).Value = "売上金額"
+    wsG.Range(wsG.Cells(2, col), wsG.Cells(1000, col + 1)).ClearContents
+
+    Dim kv As Variant
+    Dim rowIdx As Long
+    rowIdx = 2
+    For Each kv In dicAgg.Keys
+        wsG.Cells(rowIdx, col).Value = CStr(kv)
+        wsG.Cells(rowIdx, col + 1).Value = dicAgg(kv)
+        rowIdx = rowIdx + 1
+    Next kv
+
+    Dim nChart As Long
+    nChart = rowIdx - 2
+
+    If nChart = 0 Then
+        MsgBox "集計データがありません。軸の選択を確認してください。", vbInformation
+        Exit Sub
+    End If
+
+    ' シリーズ更新
+    Do While cht.SeriesCollection.Count > 0
+        cht.SeriesCollection(1).Delete
+    Loop
+
+    Dim srs As Series
+    Set srs = cht.SeriesCollection.NewSeries
+    srs.Name = "売上金額 (" & axis & ")"
+    srs.Values = wsG.Range(wsG.Cells(2, col + 1), wsG.Cells(nChart + 1, col + 1))
+    srs.XValues = wsG.Range(wsG.Cells(2, col), wsG.Cells(nChart + 1, col))
+    srs.ChartType = xlColumnClustered
+    srs.Format.Fill.ForeColor.RGB = RGB(31, 78, 120)
+
+    ' 日付別の場合は気温シリーズも追加
+    If axis = "日付別(全体)" Then
+        Dim srs2 As Series
+        Set srs2 = cht.SeriesCollection.NewSeries
+        srs2.Name = "最高気温"
+        srs2.Values = wsG.Range(wsG.Cells(2, col + 2), wsG.Cells(nChart + 1, col + 2))
+        srs2.XValues = wsG.Range(wsG.Cells(2, col), wsG.Cells(nChart + 1, col))
+        srs2.ChartType = xlLine
+        srs2.AxisGroup = xlSecondary
+        srs2.Format.Line.ForeColor.RGB = RGB(255, 102, 0)
+        srs2.Format.Line.Weight = 2.5
+    End If
+
+    cht.ChartTitle.Text = "売上金額グラフ (" & axis & ")"
+
+    MsgBox "グラフを更新しました。(" & axis & ")", vbInformation, "グラフ更新"
+    Exit Sub
+ErrExit:
+    MsgBox "エラーが発生しました。先に「データ取得」を実行してください。", vbExclamation
+End Sub
+
+' ===== スタイル適用 =====
+Sub StyleSheet(ws As Worksheet, lr As Long, lc As Long)
+    Dim rng As Range
+    Set rng = ws.Range(ws.Cells(1, 1), ws.Cells(lr, lc))
+    Dim hr As Range
+    Set hr = ws.Range(ws.Cells(1, 1), ws.Cells(1, lc))
+
+    With hr
+        .Interior.Color = RGB(31, 78, 120)
+        .Font.Color = RGB(255, 255, 255)
+        .Font.Bold = True
+        .Font.Size = 11
+        .HorizontalAlignment = xlCenter
+        .VerticalAlignment = xlCenter
+        .RowHeight = 28
+    End With
+
+    Dim ri As Long
+    For ri = 2 To lr
+        ws.Range(ws.Cells(ri, 1), ws.Cells(ri, lc)).Interior.Color = RGB(255, 255, 255)
+    Next ri
+
+    With rng.Borders
+        .LineStyle = xlContinuous
+        .Weight = xlThin
+        .Color = RGB(180, 198, 220)
+    End With
+
+    Dim c As Long
+    For c = 1 To lc
+        ws.Columns(c).AutoFit
+        If ws.Columns(c).ColumnWidth < 13 Then ws.Columns(c).ColumnWidth = 13
+    Next c
+
+    ws.Range("A2").Select
+    ActiveWindow.FreezePanes = True
+End Sub
+
+' ===== 縞模様カラー適用（結合後に呼ぶ） =====
+Sub ApplyStripeColors(ws As Worksheet, startRow As Long, lastRow As Long, lc As Long)
+    Dim colorA As Long, colorB As Long
+    colorA = RGB(255, 255, 255)     ' 白
+    colorB = RGB(235, 242, 250)     ' 薄いブルーグレー
+
+    Dim r As Long, stripe As Long
+    stripe = 0
+
+    For r = startRow To lastRow
+        ' 区切り空行はスキップ
+        If ws.Cells(r, 3).Value = "" And ws.Cells(r, 4).Value = "" Then
+            ws.Range(ws.Cells(r, 1), ws.Cells(r, lc)).Interior.ColorIndex = xlNone
+        Else
+            Dim fillColor As Long
+            If stripe Mod 2 = 0 Then
+                fillColor = colorA
+            Else
+                fillColor = colorB
+            End If
+
+            Dim c As Long
+            For c = 1 To lc
+                Dim cel As Range
+                Set cel = ws.Cells(r, c)
+                ' 結合セルの先頭行のみ色を設定
+                If cel.MergeCells Then
+                    If cel.MergeArea.Row = r Then
+                        cel.MergeArea.Interior.Color = fillColor
+                    End If
+                Else
+                    cel.Interior.Color = fillColor
+                End If
+            Next c
+
+            ' 次の行で品名（3列目）が変わったらストライプを進める
+            If r < lastRow Then
+                If ws.Cells(r + 1, 3).Value <> "" And ws.Cells(r + 1, 3).Value <> ws.Cells(r, 3).Value Then
+                    stripe = stripe + 1
+                End If
+            End If
+        End If
+    Next r
+End Sub
+
+' ===== セル結合（連続する同値） =====
+Sub MergeConsecutive(ws As Worksheet, col As Long, startRow As Long, lastRow As Long)
+    Dim r As Long, startMatch As Long
+    startMatch = startRow
+    Application.DisplayAlerts = False
+
+    For r = startRow + 1 To lastRow + 1
+        Dim curVal As Variant, isEmpty As Boolean
+        curVal = ws.Cells(r, col).Value
+        ' 区切り空行かどうか（品名と単価が空）
+        isEmpty = (ws.Cells(r, 3).Value = "" And ws.Cells(r, 4).Value = "")
+
+        If curVal <> ws.Cells(r - 1, col).Value Or r > lastRow Or isEmpty Then
+            If r - 1 > startMatch Then
+                If ws.Cells(startMatch, col).Value <> "" Then
+                    ws.Range(ws.Cells(startMatch, col), ws.Cells(r - 1, col)).Merge
+                    ws.Cells(startMatch, col).HorizontalAlignment = xlCenter
+                    ws.Cells(startMatch, col).VerticalAlignment = xlCenter
+                End If
+            End If
+            startMatch = r
+            If isEmpty Then startMatch = r + 1
+        End If
+    Next r
+    Application.DisplayAlerts = True
+End Sub
