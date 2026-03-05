@@ -298,6 +298,10 @@ Sub FetchSalesData()
     Application.StatusBar = "グラフ作成中..."
     Call MakeChart(fd, fc, sd, ed, siteFilter)
 
+    ' ===== 店別データシート =====
+    Application.StatusBar = "店別データ作成中..."
+    Call BuildStoreSheet(fd, fc)
+
     wsS.Range("D14").Value = "期間: " & Format(sd, "yyyy/mm/dd") & " - " & Format(ed, "yyyy/mm/dd")
     wsS.Range("D15").Value = "対象: " & fc & " 件 / 品目: " & ni & " 種類"
     wsS.Range("D16").Value = "総売上: " & Format(oT, "#,##0") & " 円"
@@ -788,6 +792,184 @@ HideCols:
     Exit Sub
 ErrExit:
     MsgBox "エラー: 先にデータ取得を実行してください。"
+End Sub
+
+' ===== 店別データシート（全店舗・商品×日付クロス表） =====
+Sub BuildStoreSheet(fd As Variant, fc As Long)
+    If fc = 0 Then Exit Sub
+
+    ' --- 既存シートを削除 ---
+    Application.DisplayAlerts = False
+    On Error Resume Next
+    ThisWorkbook.Sheets("店別データ").Delete
+    On Error GoTo 0
+    Application.DisplayAlerts = True
+
+    ' --- シート作成 ---
+    Dim ws As Worksheet
+    Set ws = ThisWorkbook.Sheets.Add(After:=ThisWorkbook.Sheets(ThisWorkbook.Sheets.Count))
+    ws.Name = "店別データ"
+    ws.Tab.Color = RGB(0, 112, 192)
+
+    ' --- 日付リスト（昇順）を収集 ---
+    Dim dicDates As Object
+    Set dicDates = CreateObject("Scripting.Dictionary")
+    Dim i As Long
+    For i = 1 To fc
+        Dim dk As String
+        dk = Format(fd(i, 1), "yyyy/mm/dd")
+        If Not dicDates.Exists(dk) Then dicDates.Add dk, CDate(fd(i, 1))
+    Next i
+
+    ' 日付を昇順ソート
+    Dim dateKeys() As String
+    ReDim dateKeys(0 To dicDates.Count - 1)
+    Dim di As Long: di = 0
+    Dim kv As Variant
+    For Each kv In dicDates.Keys
+        dateKeys(di) = CStr(kv): di = di + 1
+    Next kv
+    ' バブルソート
+    Dim si As Long, sj As Long, tmp As String
+    For si = 0 To UBound(dateKeys) - 1
+        For sj = si + 1 To UBound(dateKeys)
+            If dicDates(dateKeys(si)) > dicDates(dateKeys(sj)) Then
+                tmp = dateKeys(si): dateKeys(si) = dateKeys(sj): dateKeys(sj) = tmp
+            End If
+        Next sj
+    Next si
+    Dim nDates As Long: nDates = UBound(dateKeys) + 1
+
+    ' --- 店舗リスト（出現順）を収集 ---
+    Dim dicStores As Object
+    Set dicStores = CreateObject("Scripting.Dictionary")
+    For i = 1 To fc
+        Dim st As String: st = CStr(fd(i, 2))
+        If st <> "" And Not dicStores.Exists(st) Then dicStores.Add st, dicStores.Count
+    Next i
+
+    ' --- 店舗×商品×日付 の数量を集計 ---
+    ' キー: 店舗名|品名|日付 → 数量合計
+    Dim dicQty As Object
+    Set dicQty = CreateObject("Scripting.Dictionary")
+    ' 店舗別の品名リスト（順序保持）
+    Dim dicStoreItems As Object
+    Set dicStoreItems = CreateObject("Scripting.Dictionary")
+
+    For i = 1 To fc
+        Dim storeName As String: storeName = CStr(fd(i, 2))
+        Dim itemName As String:  itemName  = CStr(fd(i, 3))
+        Dim dateStr As String:   dateStr   = Format(fd(i, 1), "yyyy/mm/dd")
+        Dim qty As Long:         qty       = CLng(fd(i, 5))
+
+        Dim qKey As String: qKey = storeName & "|" & itemName & "|" & dateStr
+        If dicQty.Exists(qKey) Then
+            dicQty(qKey) = dicQty(qKey) + qty
+        Else
+            dicQty.Add qKey, qty
+        End If
+
+        ' 品名リスト
+        If Not dicStoreItems.Exists(storeName) Then
+            Set dicStoreItems(storeName) = CreateObject("Scripting.Dictionary")
+        End If
+        If Not dicStoreItems(storeName).Exists(itemName) Then
+            dicStoreItems(storeName).Add itemName, dicStoreItems(storeName).Count
+        End If
+    Next i
+
+    ' --- シートへ書き出し ---
+    Dim curRow As Long: curRow = 1
+    Dim storeKey As Variant
+
+    ' 色定義
+    Dim hdrBg As Long:  hdrBg  = RGB(31, 78, 120)   ' ヘッダ背景（紺）
+    Dim hdrFg As Long:  hdrFg  = RGB(255, 255, 255)  ' ヘッダ文字（白）
+    Dim stBg As Long:   stBg   = RGB(0, 112, 192)    ' 店舗名行背景（青）
+    Dim rowA As Long:   rowA   = RGB(255, 255, 255)   ' 行色A
+    Dim rowB As Long:   rowB   = RGB(235, 242, 250)   ' 行色B
+
+    For Each storeKey In dicStores.Keys
+        Dim sName As String: sName = CStr(storeKey)
+
+        ' --- 店舗ヘッダ行（店舗名 | 日付1 | 日付2 | ...） ---
+        With ws.Cells(curRow, 1)
+            .Value = sName
+            .Font.Bold = True
+            .Font.Color = hdrFg
+            .Interior.Color = stBg
+        End With
+        Dim ci As Long
+        For ci = 0 To nDates - 1
+            Dim hdCell As Range
+            Set hdCell = ws.Cells(curRow, ci + 2)
+            hdCell.Value = CDate(dicDates(dateKeys(ci)))
+            hdCell.NumberFormat = "m/d"
+            hdCell.Font.Bold = True
+            hdCell.Font.Color = hdrFg
+            hdCell.Interior.Color = hdrBg
+            hdCell.HorizontalAlignment = xlCenter
+        Next ci
+
+        ' ヘッダ行の高さ
+        ws.Rows(curRow).RowHeight = 22
+        curRow = curRow + 1
+
+        ' --- 商品行 ---
+        Dim itemKey As Variant
+        Dim itemIdx As Long: itemIdx = 0
+        For Each itemKey In dicStoreItems(sName).Keys
+            Dim iName As String: iName = CStr(itemKey)
+            Dim rowColor As Long
+            If itemIdx Mod 2 = 0 Then rowColor = rowA Else rowColor = rowB
+
+            With ws.Cells(curRow, 1)
+                .Value = iName
+                .Interior.Color = rowColor
+            End With
+
+            For ci = 0 To nDates - 1
+                Dim qk As String: qk = sName & "|" & iName & "|" & dateKeys(ci)
+                Dim cellVal As Long
+                If dicQty.Exists(qk) Then cellVal = dicQty(qk) Else cellVal = 0
+
+                With ws.Cells(curRow, ci + 2)
+                    If cellVal > 0 Then
+                        .Value = cellVal
+                    Else
+                        .Value = ""
+                    End If
+                    .Interior.Color = rowColor
+                    .HorizontalAlignment = xlCenter
+                End With
+            Next ci
+
+            ws.Rows(curRow).RowHeight = 18
+            curRow = curRow + 1
+            itemIdx = itemIdx + 1
+        Next itemKey
+
+        ' 店舗間の空行
+        ws.Rows(curRow).RowHeight = 8
+        ws.Range(ws.Cells(curRow, 1), ws.Cells(curRow, nDates + 1)).Interior.ColorIndex = xlNone
+        curRow = curRow + 1
+    Next storeKey
+
+    ' --- 列幅自動調整 ---
+    ws.Columns(1).AutoFit
+    If ws.Columns(1).ColumnWidth < 14 Then ws.Columns(1).ColumnWidth = 14
+    For ci = 2 To nDates + 1
+        ws.Columns(ci).ColumnWidth = 7
+    Next ci
+
+    ' --- 枠線 ---
+    Dim dataRng As Range
+    Set dataRng = ws.Range(ws.Cells(1, 1), ws.Cells(curRow - 1, nDates + 1))
+    With dataRng.Borders
+        .LineStyle = xlContinuous
+        .Weight = xlThin
+        .Color = RGB(180, 198, 220)
+    End With
 End Sub
 """
 
