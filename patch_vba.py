@@ -15,7 +15,7 @@ Sub ClearDuplicateCol(ws As Worksheet, col As Long, startRow As Long, lastRow As
     prevValP1 = ""
     prevValP2 = ""
     
-    For r = startRow + 1 To lastRow
+    For r = startRow To lastRow
         If ws.Cells(r, 3).Value = "日合計" Or (ws.Cells(r, 4).Value = "" And ws.Cells(r, 3).Value = "") Then
             prevValCol = ""
             prevValP1 = ""

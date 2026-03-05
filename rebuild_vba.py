@@ -58,6 +58,8 @@ Sub FetchSalesData()
         End If
     End If
 
+
+
     dp = basePath & sep & "データベース" & sep & "売上管理表.xlsx"
     If Not fso.FileExists(dp) Then
         MsgBox "DBが見つかりません:" & vbCrLf & dp, vbCritical, "エラー"
@@ -374,57 +376,50 @@ End Sub
 Sub ClearDuplicateCol(ws As Worksheet, col As Long, startRow As Long, lastRow As Long, Optional parentCol1 As Long = 0, Optional parentCol2 As Long = 0)
     Dim r As Long
     Application.DisplayAlerts = False
-
+    
     Dim prevValCol As String, prevValP1 As String, prevValP2 As String
     prevValCol = ""
     prevValP1 = ""
     prevValP2 = ""
-
-    ' ★修正: startRow（先頭行）からprev値を記録してからstartRow+1以降を処理
-    If Not (ws.Cells(startRow, 3).Value = "日合計" Or (ws.Cells(startRow, 4).Value = "" And ws.Cells(startRow, 3).Value = "")) Then
-        prevValCol = CStr(ws.Cells(startRow, col).Value)
-        If parentCol1 > 0 Then prevValP1 = CStr(ws.Cells(startRow, parentCol1).Value)
-        If parentCol2 > 0 Then prevValP2 = CStr(ws.Cells(startRow, parentCol2).Value)
-    End If
-
-    For r = startRow + 1 To lastRow
+    
+    For r = startRow To lastRow
         If ws.Cells(r, 3).Value = "日合計" Or (ws.Cells(r, 4).Value = "" And ws.Cells(r, 3).Value = "") Then
             prevValCol = ""
             prevValP1 = ""
             prevValP2 = ""
             GoTo NextRow
         End If
-
+        
         Dim curValCol As String, curValP1 As String, curValP2 As String
         curValCol = CStr(ws.Cells(r, col).Value)
         If curValCol = "" Then GoTo NextRow
-
+        
         curValP1 = ""
         If parentCol1 > 0 Then
             curValP1 = CStr(ws.Cells(r, parentCol1).Value)
             If curValP1 = "" Then curValP1 = prevValP1
         End If
-
+        
         curValP2 = ""
         If parentCol2 > 0 Then
             curValP2 = CStr(ws.Cells(r, parentCol2).Value)
             If curValP2 = "" Then curValP2 = prevValP2
         End If
-
+        
         If prevValCol = "" Then
             prevValCol = curValCol
             prevValP1 = curValP1
             prevValP2 = curValP2
             GoTo NextRow
         End If
-
+        
         Dim doClear As Boolean
         doClear = True
-
+        
         If curValCol <> prevValCol Then doClear = False
         If parentCol1 > 0 And curValP1 <> prevValP1 Then doClear = False
         If parentCol2 > 0 And curValP2 <> prevValP2 Then doClear = False
-
+        
         If doClear Then
             ws.Cells(r, col).ClearContents
             On Error Resume Next
@@ -435,7 +430,7 @@ Sub ClearDuplicateCol(ws As Worksheet, col As Long, startRow As Long, lastRow As
             prevValP1 = curValP1
             prevValP2 = curValP2
         End If
-
+        
 NextRow:
     Next r
     Application.DisplayAlerts = True

@@ -26,14 +26,39 @@ Sub FetchSalesData()
     If siteFilter = "" Then siteFilter = "すべて"
 
     Dim dp As String, basePath As String
-    basePath = ThisWorkbook.Path
-    If InStr(1, basePath, "https", vbTextCompare) > 0 Then
-        basePath = Environ("USERPROFILE") & "\OneDrive\デスクトップ\売上メール"
-    End If
-    dp = basePath & "\データベース\売上管理表.xlsx"
-
+    Dim sep As String: sep = Application.PathSeparator
     Dim fso As Object
     Set fso = CreateObject("Scripting.FileSystemObject")
+    basePath = ThisWorkbook.Path
+
+    If InStr(1, basePath, "https", vbTextCompare) > 0 Then
+        basePath = Environ("USERPROFILE")
+        If fso.FolderExists(basePath & sep & "OneDrive") Then
+            basePath = basePath & sep & "OneDrive"
+        End If
+        If fso.FolderExists(basePath & sep & "Desktop") Then
+            basePath = basePath & sep & "Desktop"
+        End If
+        If fso.FolderExists(basePath & sep & "デスクトップ") Then
+            basePath = basePath & sep & "デスクトップ"
+        End If
+        If fso.FolderExists(basePath & sep & "売上メール") Then
+            basePath = basePath & sep & "売上メール"
+        End If
+    End If
+
+    ' --- GitHubから最新のDBを自動ダウンロード（同期） ---
+    Application.StatusBar = "最新データの同期中 (GitHub)..."
+    Dim wsh As Object
+    Set wsh = CreateObject("WScript.Shell")
+    ' basePath（リポジトリのルート）に移動して git pull を実行（ウィンドウを非表示で完了まで待機）
+    wsh.Run "cmd /c cd /d """ & basePath & """ && git pull origin main", 0, True
+    Set wsh = Nothing
+    Application.StatusBar = False
+    ' ----------------------------------------------------
+
+    dp = basePath & sep & "データベース" & sep & "売上管理表.xlsx"
+
     If Not fso.FileExists(dp) Then
         MsgBox "DBが見つかりません:" & vbCrLf & dp, vbCritical, "エラー"
         Exit Sub
@@ -715,7 +740,7 @@ Sub MergeConsecutive(ws As Worksheet, col As Long, startRow As Long, lastRow As 
         isEmpty = (ws.Cells(r, 3).Value = "" And ws.Cells(r, 4).Value = "")
 
         If curVal <> ws.Cells(r - 1, col).Value Or r > lastRow Or isEmpty Then
-            If r - 1 > startMatch Then
+            If r - 1 >= startMatch Then
                 If ws.Cells(startMatch, col).Value <> "" Then
                     ws.Range(ws.Cells(startMatch, col), ws.Cells(r - 1, col)).Merge
                     ws.Cells(startMatch, col).HorizontalAlignment = xlCenter
