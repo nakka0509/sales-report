@@ -15,26 +15,63 @@ XLS_FILE = os.path.join(BASE_DIR, "売上確認.xlsm")
 VBA = r"""Attribute VB_Name = "SalesReport"
 Option Explicit
 
+' ================= ボタン割り当て用マクロ =================
 Sub FetchSalesData()
+    Call DoFetchSalesData(False)
+End Sub
+
+Sub FetchLatestSalesData()
+    ' データ取得の前にGitHubから最新データを取得
+    Dim wsh As Object
+    Set wsh = CreateObject("WScript.Shell")
+    Dim basePath As String
+    Dim sep As String: sep = Application.PathSeparator
+    Dim fso As Object
+    Set fso = CreateObject("Scripting.FileSystemObject")
+    basePath = ThisWorkbook.Path
+    If InStr(1, basePath, "https", vbTextCompare) > 0 Then
+        basePath = Environ("USERPROFILE")
+        If fso.FolderExists(basePath & sep & "OneDrive") Then
+            basePath = basePath & sep & "OneDrive"
+        End If
+        If fso.FolderExists(basePath & sep & "デスクトップ" & sep & "売上メール") Then
+            basePath = basePath & sep & "デスクトップ" & sep & "売上メール"
+        End If
+    End If
+    wsh.Run "cmd.exe /c cd /d " & Chr(34) & basePath & Chr(34) & " && git pull origin main", 0, True
+    
+    Call DoFetchSalesData(True)
+End Sub
+
+' ================= メイン取得処理 =================
+Sub DoFetchSalesData(latestOnly As Boolean)
     Dim wsS As Worksheet
     Set wsS = ThisWorkbook.Sheets("検索")
 
-    If Not IsDate(wsS.Range("D9").Value) Or Not IsDate(wsS.Range("D10").Value) Then
-        MsgBox "開始日と終了日を正しく入力してください。", vbExclamation, "入力エラー"
-        Exit Sub
+    ' --- latestOnlyではない場合の通常の日付チェック ---
+    If Not latestOnly Then
+        If Not IsDate(wsS.Range("D9").Value) Or Not IsDate(wsS.Range("D10").Value) Then
+            MsgBox "期間（開始日・終了日）を正しく入力してください。", vbExclamation, "エラー"
+            Exit Sub
+        End If
     End If
 
     Dim sd As Date, ed As Date
-    sd = CDate(wsS.Range("D9").Value)
-    ed = CDate(wsS.Range("D10").Value)
-    If sd > ed Then
-        MsgBox "開始日は終了日より前にしてください。", vbExclamation, "入力エラー"
-        Exit Sub
+    If Not latestOnly Then
+        sd = CDate(wsS.Range("D9").Value)
+        ed = CDate(wsS.Range("D10").Value)
+        If sd > ed Then
+            MsgBox "開始日は終了日以前にしてください。", vbExclamation, "エラー"
+            Exit Sub
+        End If
     End If
 
     Dim siteFilter As String
-    siteFilter = Trim(wsS.Range("D8").Value)
+    siteFilter = wsS.Range("D12").Value
     If siteFilter = "" Then siteFilter = "すべて"
+
+    Application.ScreenUpdating = False
+    Application.Calculation = xlCalculationManual
 
     Dim dp As String, basePath As String
     Dim sep As String: sep = Application.PathSeparator
@@ -99,6 +136,36 @@ Sub FetchSalesData()
         End Select
     Next j
     If cSrc = 0 Then MsgBox "取得元列が見つかりません。", vbCritical: GoTo Cleanup
+
+    ' --- 最新日取得処理 ---
+    If latestOnly Then
+        Dim maxDate As Date
+        Dim firstFound As Boolean
+        firstFound = False
+        Dim dr As Long
+        For dr = 2 To UBound(d, 1)
+            If IsDate(d(dr, cD)) Then
+                Dim tmpD As Date
+                tmpD = CDate(d(dr, cD))
+                If Not firstFound Then
+                    maxDate = tmpD
+                    firstFound = True
+                Else
+                    If tmpD > maxDate Then maxDate = tmpD
+                End If
+            End If
+        Next dr
+        
+        If firstFound Then
+            sd = maxDate
+            ed = maxDate
+            wsS.Range("D9").Value = Format(sd, "yyyy/mm/dd")
+            wsS.Range("D10").Value = Format(ed, "yyyy/mm/dd")
+        Else
+            MsgBox "データベースに有効な日付が存在しません。", vbExclamation, "エラー"
+            GoTo Cleanup
+        End If
+    End If
 
     Dim fc As Long: fc = 0
     Dim i As Long, rd As Date, matchSite As Boolean
@@ -1042,7 +1109,12 @@ Sub BuildStoreSheet(fd As Variant, fc As Long)
     End With
     
     ' --- オートフィルタ設定 ---
-    ws.Rows(1).AutoFilter
+    ' 全行にフィルタを適用し、日付列のプルダウン(▼)を非表示にする
+    ws.AutoFilterMode = False
+    dataRng.AutoFilter
+    For ci = 2 To nDates + 1
+        dataRng.AutoFilter Field:=ci, VisibleDropDown:=False
+    Next ci
 End Sub
 """
 
@@ -1076,13 +1148,32 @@ def rebuild():
         # インポート
         proj.VBComponents.Import(tmp_bas)
         print("Imported SalesReport.bas (cp932)")
-        # ボタンのOnAction設定
+        # ボタンのOnAction設定と複製
         ws = wb.Sheets("検索")
+        
+        # 既存の「btnFetchLatest」があれば削除
+        for si in range(ws.Shapes.Count, 0, -1):
+            if ws.Shapes(si).Name == "btnFetchLatest":
+                ws.Shapes(si).Delete()
+
+        # btnFetchを探して設定・複製
         for si in range(1, ws.Shapes.Count + 1):
             shp = ws.Shapes(si)
             if shp.Name == "btnFetch":
                 shp.OnAction = "FetchSalesData"
                 print("Button OnAction: FetchSalesData")
+                
+                # 複製して最新化ボタンを作成
+                new_btn = shp.Duplicate()
+                new_btn.Name = "btnFetchLatest"
+                new_btn.Left = shp.Left + shp.Width + 10 # 右に10ptずらす
+                new_btn.Top = shp.Top
+                new_btn.TextFrame.Characters().Text = "最新データのみ検索"
+                new_btn.Width = shp.Width * 1.5 # テキストが長いので幅を広げる
+                new_btn.OnAction = "FetchLatestSalesData"
+                print("Created new button: btnFetchLatest")
+                break
+                
         wb.Save()
         wb.Close(False)
         print("COMPLETE! 売上確認.xlsm を更新しました。")

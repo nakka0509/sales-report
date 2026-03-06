@@ -2,22 +2,62 @@ Attribute VB_Name = "SalesReport"
 Option Explicit
 
 ' ===== フィルタ・データ取得 =====
+' ================= ボタン割り当て用マクロ =================
 Sub FetchSalesData()
+    Call DoFetchSalesData(False)
+End Sub
+
+Sub FetchLatestSalesData()
+    ' データ取得の前にGitHubから最新データを取得
+    Dim wsh As Object
+    Set wsh = CreateObject("WScript.Shell")
+    Dim basePath As String
+    Dim sep As String: sep = Application.PathSeparator
+    Dim fso As Object
+    Set fso = CreateObject("Scripting.FileSystemObject")
+    basePath = ThisWorkbook.Path
+    If InStr(1, basePath, "https", vbTextCompare) > 0 Then
+        basePath = Environ("USERPROFILE")
+        If fso.FolderExists(basePath & sep & "OneDrive") Then
+            basePath = basePath & sep & "OneDrive"
+        End If
+        If fso.FolderExists(basePath & sep & "Desktop") Then
+            basePath = basePath & sep & "Desktop"
+        End If
+        If fso.FolderExists(basePath & sep & "デスクトップ") Then
+            basePath = basePath & sep & "デスクトップ"
+        End If
+        If fso.FolderExists(basePath & sep & "売上メール") Then
+            basePath = basePath & sep & "売上メール"
+        End If
+    End If
+    wsh.Run "cmd /c cd /d " & Chr(34) & basePath & Chr(34) & " && git pull origin main", 0, True
+    Set wsh = Nothing
+    
+    Call DoFetchSalesData(True)
+End Sub
+
+' ================= メイン取得処理 =================
+Sub DoFetchSalesData(latestOnly As Boolean)
     Dim wsS As Worksheet
     Set wsS = ThisWorkbook.Sheets("検索")
 
     ' 入力チェック
-    If Not IsDate(wsS.Range("D9").Value) Or Not IsDate(wsS.Range("D10").Value) Then
-        MsgBox "開始日と終了日を正しく入力してください。", vbExclamation, "入力エラー"
-        Exit Sub
+    If Not latestOnly Then
+        If Not IsDate(wsS.Range("D9").Value) Or Not IsDate(wsS.Range("D10").Value) Then
+            MsgBox "開始日と終了日を正しく入力してください。", vbExclamation, "入力エラー"
+            Exit Sub
+        End If
     End If
 
     Dim sd As Date, ed As Date
-    sd = CDate(wsS.Range("D9").Value)
-    ed = CDate(wsS.Range("D10").Value)
-    If sd > ed Then
-        MsgBox "開始日は終了日より前にしてください。", vbExclamation, "入力エラー"
-        Exit Sub
+    If Not latestOnly Then
+        sd = CDate(wsS.Range("D9").Value)
+        ed = CDate(wsS.Range("D10").Value)
+        If sd > ed Then
+            MsgBox "開始日は終了日より前にしてください。", vbExclamation, "入力エラー"
+            Exit Sub
+        End If
     End If
 
     ' フィルタ設定
@@ -47,15 +87,17 @@ Sub FetchSalesData()
         End If
     End If
 
-    ' --- GitHubから最新のDBを自動ダウンロード（同期） ---
-    Application.StatusBar = "最新データの同期中 (GitHub)..."
-    Dim wsh As Object
-    Set wsh = CreateObject("WScript.Shell")
-    ' basePath（リポジトリのルート）に移動して git pull を実行（ウィンドウを非表示で完了まで待機）
-    wsh.Run "cmd /c cd /d """ & basePath & """ && git pull origin main", 0, True
-    Set wsh = Nothing
-    Application.StatusBar = False
-    ' ----------------------------------------------------
+    If Not latestOnly Then
+        ' --- GitHubから最新のDBを自動ダウンロード（同期） ---
+        Application.StatusBar = "最新データの同期中 (GitHub)..."
+        Dim wsh As Object
+        Set wsh = CreateObject("WScript.Shell")
+        ' basePath（リポジトリのルート）に移動して git pull を実行（ウィンドウを非表示で完了まで待機）
+        wsh.Run "cmd /c cd /d """ & basePath & """ && git pull origin main", 0, True
+        Set wsh = Nothing
+        Application.StatusBar = False
+        ' ----------------------------------------------------
+    End If
 
     dp = basePath & sep & "データベース" & sep & "売上管理表.xlsx"
 
@@ -107,6 +149,36 @@ Sub FetchSalesData()
     If cSrc = 0 Then
         MsgBox "データに「取得元」列が見つかりません。Report.pyを実行してデータを更新してください。", vbCritical, "列エラー"
         GoTo Cleanup
+    End If
+
+    ' --- 最新日取得処理 ---
+    If latestOnly Then
+        Dim maxDate As Date
+        Dim firstFound As Boolean
+        firstFound = False
+        Dim dr As Long
+        For dr = 2 To UBound(d, 1)
+            If IsDate(d(dr, cD)) Then
+                Dim tmpD As Date
+                tmpD = CDate(d(dr, cD))
+                If Not firstFound Then
+                    maxDate = tmpD
+                    firstFound = True
+                Else
+                    If tmpD > maxDate Then maxDate = tmpD
+                End If
+            End If
+        Next dr
+        
+        If firstFound Then
+            sd = maxDate
+            ed = maxDate
+            wsS.Range("D9").Value = Format(sd, "yyyy/mm/dd")
+            wsS.Range("D10").Value = Format(ed, "yyyy/mm/dd")
+        Else
+            MsgBox "データベースに有効な日付が存在しません。", vbExclamation, "エラー"
+            GoTo Cleanup
+        End If
     End If
 
     Dim fc As Long
@@ -1006,5 +1078,10 @@ Sub BuildStoreSheet(fd As Variant, fc As Long)
     End With
     
     ' --- オートフィルタ設定 ---
-    ws.Rows(1).AutoFilter
+    ' 全行にフィルタを適用し、日付列のプルダウン(▼)を非表示にする
+    ws.AutoFilterMode = False
+    dataRng.AutoFilter
+    For ci = 2 To nDates + 1
+        dataRng.AutoFilter Field:=ci, VisibleDropDown:=False
+    Next ci
 End Sub
