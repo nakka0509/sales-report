@@ -137,47 +137,96 @@ Sub DoFetchSalesData(latestOnly As Boolean)
     Next j
     If cSrc = 0 Then MsgBox "取得元列が見つかりません。", vbCritical: GoTo Cleanup
 
-    ' --- 最新日取得処理 ---
+    ' --- 最新日取得処理（取得元考慮） ---
+    Dim dicMax As Object
+    Set dicMax = CreateObject("Scripting.Dictionary")
+    
     If latestOnly Then
-        Dim maxDate As Date
-        Dim firstFound As Boolean
-        firstFound = False
         Dim dr As Long
         For dr = 2 To UBound(d, 1)
             If IsDate(d(dr, cD)) Then
                 Dim tmpD As Date
                 tmpD = CDate(d(dr, cD))
-                If Not firstFound Then
-                    maxDate = tmpD
-                    firstFound = True
+                Dim srcVal As String
+                srcVal = Trim(CStr(d(dr, cSrc)))
+                
+                ' 取得元ごとに最新日を記録
+                If Not dicMax.Exists(srcVal) Then
+                    dicMax.Add srcVal, tmpD
                 Else
-                    If tmpD > maxDate Then maxDate = tmpD
+                    If tmpD > dicMax(srcVal) Then dicMax(srcVal) = tmpD
                 End If
             End If
         Next dr
         
-        If firstFound Then
-            sd = maxDate
-            ed = maxDate
-            wsS.Range("D9").Value = Format(sd, "yyyy/mm/dd")
-            wsS.Range("D10").Value = Format(ed, "yyyy/mm/dd")
-        Else
+        If dicMax.Count = 0 Then
             MsgBox "データベースに有効な日付が存在しません。", vbExclamation, "エラー"
             GoTo Cleanup
         End If
+        
+        ' siteFilter に応じて対象となる最新日を絞り込み、全体の開始・終了日を決める
+        Dim targetSd As Date, targetEd As Date
+        Dim bFirst As Boolean: bFirst = True
+        Dim k As Variant
+        
+        For Each k In dicMax.Keys
+            Dim kStr As String: kStr = CStr(k)
+            Dim isTarget As Boolean: isTarget = False
+            
+            If siteFilter = "すべて" Then
+                isTarget = True
+            ElseIf StrComp(kStr, siteFilter, vbTextCompare) = 0 Then
+                isTarget = True
+            End If
+            
+            If isTarget Then
+                If bFirst Then
+                    targetSd = dicMax(k)
+                    targetEd = dicMax(k)
+                    bFirst = False
+                Else
+                    If dicMax(k) < targetSd Then targetSd = dicMax(k)
+                    If dicMax(k) > targetEd Then targetEd = dicMax(k)
+                End If
+            End If
+        Next k
+        
+        If bFirst Then
+            MsgBox "指定した取得元のデータが存在しません。", vbExclamation, "エラー"
+            GoTo Cleanup
+        End If
+        
+        sd = targetSd
+        ed = targetEd
+        wsS.Range("D9").Value = Format(sd, "yyyy/mm/dd")
+        wsS.Range("D10").Value = Format(ed, "yyyy/mm/dd")
     End If
 
     Dim fc As Long: fc = 0
     Dim i As Long, rd As Date, matchSite As Boolean
+    Dim siteVal As String
     For i = 2 To UBound(d, 1)
         If IsDate(d(i, cD)) Then
             rd = CDate(d(i, cD))
-            If rd >= sd And rd <= ed Then
+            siteVal = Trim(CStr(d(i, cSrc)))
+            
+            ' latestOnly が True ならば、その取得元において「rd == 取得元の最新日」であるかチェック
+            Dim isDateOk As Boolean: isDateOk = False
+            If latestOnly Then
+                If dicMax.Exists(siteVal) Then
+                    If rd = dicMax(siteVal) Then isDateOk = True
+                End If
+            Else
+                If rd >= sd And rd <= ed Then isDateOk = True
+            End If
+
+            If isDateOk Then
                 matchSite = True
                 If siteFilter <> "すべて" Then
-                    If StrComp(Trim(CStr(d(i, cSrc))), siteFilter, vbTextCompare) <> 0 Then matchSite = False
+                    If StrComp(siteVal, siteFilter, vbTextCompare) <> 0 Then matchSite = False
                 End If
                 If matchSite Then fc = fc + 1
+            End If
             End If
         End If
     Next i
@@ -969,11 +1018,28 @@ Sub BuildStoreSheet(fd As Variant, fc As Long)
         Dim sName As String: sName = CStr(storeKey)
 
         ' --- 店舗ヘッダ行（店舗名 | 日付1 | 日付2 | ...） ---
+        ' フィルタで小見出しが消えないように、A列の店舗名に透明な文字で「すべての品名の文字情報」などを埋め込むか、
+        ' または、ユーザがよく検索するキーワードを透明にして仕込むハックがありますが、
+        ' 最もシンプルなのは先頭にゼロ幅スペースを含むか、
+        ' または別列にフラグを持ちそれをフィルタ条件にすることです。
+        ' ここでは「店名をA列に書くが、実は値の末尾に"▼店"などと付加しておく」手法を採用しにくいので、
+        ' マクロ側でフィルタをかける機能は提供せず、A列に純粋に店名を出します。
+        ' ユーザーが「切花」でフィルタした時も店舗名が消えないように、
+        ' 店名の末尾に全角スペースと「和花 切花 鉢物 加工品」といれ、文字色を背景と同じ青にします。
+        Dim storeDisp As String
+        storeDisp = sName & "　(和花 切花 鉢物 加工品)"
+        
         With ws.Cells(curRow, 1)
-            .Value = sName
+            .Value = storeDisp
             .Font.Bold = True
             .Font.Color = hdrFg
             .Interior.Color = stBg
+            ' (和花... の部分だけ背景色と同じ色(stBg)にして隠す
+            Dim hiddenStart As Long
+            hiddenStart = Len(sName) + 1
+            If hiddenStart <= Len(storeDisp) Then
+                .Characters(hiddenStart, Len(storeDisp) - hiddenStart + 1).Font.Color = stBg
+            End If
         End With
         Dim ci As Long
         For ci = 0 To nDates - 1
@@ -1055,10 +1121,42 @@ Sub BuildStoreSheet(fd As Variant, fc As Long)
 
         ' --- 商品行書き出し ---
         Dim itemIdx As Long: itemIdx = 0
+        Dim prevPriceStr As String: prevPriceStr = ""
+        Dim colorFlag As Boolean: colorFlag = True
+        
+        ' 日合計用配列
+        Dim dailyTotals() As Long
+        ReDim dailyTotals(0 To nDates - 1)
+        For ci = 0 To nDates - 1
+            dailyTotals(ci) = 0
+        Next ci
+
         For iIdx = 0 To nItems - 1
             Dim iName As String: iName = arrItem(iIdx)
+            
+            ' 数字部分（単価）を抽出して塗分けを判断
+            Dim curPriceStr As String, pIdx As Long, ch As String
+            curPriceStr = ""
+            For pIdx = Len(iName) To 1 Step -1
+                ch = Mid(iName, pIdx, 1)
+                If IsNumeric(ch) Then
+                    curPriceStr = ch & curPriceStr
+                Else
+                    Exit For
+                End If
+            Next pIdx
+            
+            If iIdx = 0 Then
+                prevPriceStr = curPriceStr
+            Else
+                If curPriceStr <> prevPriceStr Then
+                    colorFlag = Not colorFlag
+                    prevPriceStr = curPriceStr
+                End If
+            End If
+            
             Dim rowColor As Long
-            If itemIdx Mod 2 = 0 Then rowColor = rowA Else rowColor = rowB
+            If colorFlag Then rowColor = rowA Else rowColor = rowB
 
             With ws.Cells(curRow, 1)
                 .Value = iName
@@ -1073,6 +1171,7 @@ Sub BuildStoreSheet(fd As Variant, fc As Long)
                 With ws.Cells(curRow, ci + 2)
                     If cellVal > 0 Then
                         .Value = cellVal
+                        dailyTotals(ci) = dailyTotals(ci) + cellVal
                     Else
                         .Value = ""
                     End If
@@ -1085,6 +1184,28 @@ Sub BuildStoreSheet(fd As Variant, fc As Long)
             curRow = curRow + 1
             itemIdx = itemIdx + 1
         Next iIdx
+        
+        ' --- 日合計行 ---
+        With ws.Cells(curRow, 1)
+            .Value = "日合計"
+            .Font.Bold = True
+            .Interior.Color = RGB(220, 230, 241) ' 薄い青系など
+            .HorizontalAlignment = xlCenter
+        End With
+        For ci = 0 To nDates - 1
+            With ws.Cells(curRow, ci + 2)
+                If dailyTotals(ci) > 0 Then
+                    .Value = dailyTotals(ci)
+                Else
+                    .Value = ""
+                End If
+                .Font.Bold = True
+                .Interior.Color = RGB(220, 230, 241)
+                .HorizontalAlignment = xlCenter
+            End With
+        Next ci
+        ws.Rows(curRow).RowHeight = 18
+        curRow = curRow + 1
 
         ' 店舗間の空行
         ws.Rows(curRow).RowHeight = 8
@@ -1156,20 +1277,27 @@ def rebuild():
             if ws.Shapes(si).Name == "btnFetchLatest":
                 ws.Shapes(si).Delete()
 
-        # btnFetchを探して設定・複製
+        # btnFetchを探して設定・複製・サイズ調整
         for si in range(1, ws.Shapes.Count + 1):
             shp = ws.Shapes(si)
             if shp.Name == "btnFetch":
                 shp.OnAction = "FetchSalesData"
                 print("Button OnAction: FetchSalesData")
                 
+                # 元の幅を保存
+                orig_width = shp.Width
+                
+                # btnFetchの幅を少し小さくする（約半分程度、文字がはみ出ないよう調整）
+                new_width = orig_width * 0.48
+                shp.Width = new_width
+                
                 # 複製して最新化ボタンを作成
                 new_btn = shp.Duplicate()
                 new_btn.Name = "btnFetchLatest"
-                new_btn.Left = shp.Left + shp.Width + 10 # 右に10ptずらす
+                new_btn.Left = shp.Left + new_width + 10 # 間に10ptの隙間をあけて配置
                 new_btn.Top = shp.Top
                 new_btn.TextFrame.Characters().Text = "最新データのみ検索"
-                new_btn.Width = shp.Width * 1.5 # テキストが長いので幅を広げる
+                new_btn.Width = orig_width * 0.48 # 同サイズ
                 new_btn.OnAction = "FetchLatestSalesData"
                 print("Created new button: btnFetchLatest")
                 break
