@@ -924,11 +924,64 @@ Sub BuildStoreSheet(fd As Variant, fc As Long)
         ws.Rows(curRow).RowHeight = 22
         curRow = curRow + 1
 
-        ' --- 商品行 ---
+        ' --- 商品のソート（和花→切花→その他、単価昇順） ---
+        Dim nItems As Long
+        nItems = dicStoreItems(sName).Count
+        Dim arrItem() As String
+        Dim arrSortKey() As String
+        ReDim arrItem(0 To nItems - 1)
+        ReDim arrSortKey(0 To nItems - 1)
+        
+        Dim iIdx As Long: iIdx = 0
         Dim itemKey As Variant
-        Dim itemIdx As Long: itemIdx = 0
         For Each itemKey In dicStoreItems(sName).Keys
-            Dim iName As String: iName = CStr(itemKey)
+            Dim cName As String: cName = CStr(itemKey)
+            arrItem(iIdx) = cName
+            
+            ' ソートキー生成: [優先度]_[単価ゼロ埋め]_[品名]
+            Dim prio As String
+            If Left(cName, 2) = "和花" Then
+                prio = "1"
+            ElseIf Left(cName, 2) = "切花" Then
+                prio = "2"
+            Else
+                prio = "3"
+            End If
+            
+            ' 数字部分を抽出（単価）
+            Dim numStr As String, pIdx As Long, ch As String
+            numStr = ""
+            For pIdx = Len(cName) To 1 Step -1
+                ch = Mid(cName, pIdx, 1)
+                If IsNumeric(ch) Then
+                    numStr = ch & numStr
+                Else
+                    Exit For
+                End If
+            Next pIdx
+            If numStr = "" Then numStr = "0"
+            
+            Dim keyStr As String
+            keyStr = prio & "_" & Right("000000" & numStr, 6) & "_" & cName
+            arrSortKey(iIdx) = keyStr
+            iIdx = iIdx + 1
+        Next itemKey
+        
+        ' バブルソート
+        Dim k1 As Long, k2 As Long, tKey As String, tItm As String
+        For k1 = 0 To nItems - 2
+            For k2 = k1 + 1 To nItems - 1
+                If arrSortKey(k1) > arrSortKey(k2) Then
+                    tKey = arrSortKey(k1): arrSortKey(k1) = arrSortKey(k2): arrSortKey(k2) = tKey
+                    tItm = arrItem(k1): arrItem(k1) = arrItem(k2): arrItem(k2) = tItm
+                End If
+            Next k2
+        Next k1
+
+        ' --- 商品行書き出し ---
+        Dim itemIdx As Long: itemIdx = 0
+        For iIdx = 0 To nItems - 1
+            Dim iName As String: iName = arrItem(iIdx)
             Dim rowColor As Long
             If itemIdx Mod 2 = 0 Then rowColor = rowA Else rowColor = rowB
 
@@ -956,7 +1009,7 @@ Sub BuildStoreSheet(fd As Variant, fc As Long)
             ws.Rows(curRow).RowHeight = 18
             curRow = curRow + 1
             itemIdx = itemIdx + 1
-        Next itemKey
+        Next iIdx
 
         ' 店舗間の空行
         ws.Rows(curRow).RowHeight = 8
@@ -979,6 +1032,9 @@ Sub BuildStoreSheet(fd As Variant, fc As Long)
         .Weight = xlThin
         .Color = RGB(180, 198, 220)
     End With
+    
+    ' --- オートフィルタ設定 ---
+    ws.Rows(1).AutoFilter
 End Sub
 """
 
