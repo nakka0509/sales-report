@@ -924,7 +924,7 @@ Sub BuildStoreSheet(fd As Variant, fc As Long)
         ws.Rows(curRow).RowHeight = 22
         curRow = curRow + 1
 
-        ' --- 商品のソート（和花→切花→その他、単価昇順） ---
+        ' --- 商品のソート（和花(1)→切花(2)→その他五十音順(3)、かつ単価順） ---
         Dim nItems As Long
         nItems = dicStoreItems(sName).Count
         Dim arrItem() As String
@@ -938,18 +938,9 @@ Sub BuildStoreSheet(fd As Variant, fc As Long)
             Dim cName As String: cName = CStr(itemKey)
             arrItem(iIdx) = cName
             
-            ' ソートキー生成: [優先度]_[単価ゼロ埋め]_[品名]
-            Dim prio As String
-            If Left(cName, 2) = "和花" Then
-                prio = "1"
-            ElseIf Left(cName, 2) = "切花" Then
-                prio = "2"
-            Else
-                prio = "3"
-            End If
-            
-            ' 数字部分を抽出（単価）
+            ' 数字部分（単価）と文字部分（純粋な品名）に分解
             Dim numStr As String, pIdx As Long, ch As String
+            Dim baseName As String
             numStr = ""
             For pIdx = Len(cName) To 1 Step -1
                 ch = Mid(cName, pIdx, 1)
@@ -959,24 +950,41 @@ Sub BuildStoreSheet(fd As Variant, fc As Long)
                     Exit For
                 End If
             Next pIdx
+            
+            baseName = Left(cName, Len(cName) - Len(numStr))
             If numStr = "" Then numStr = "0"
             
+            ' カテゴリ判定
+            Dim prio As String
+            If Left(cName, 2) = "和花" Then
+                prio = "1"
+            ElseIf Left(cName, 2) = "切花" Then
+                prio = "2"
+            Else
+                prio = "3"
+            End If
+            
+            ' ソートキー: [優先度]_[文字部分]_[単価ゼロ埋め]
+            ' 優先度1,2は元々和花/切花で同じなので後ろの単価で決まる。
+            ' 優先度3は文字部分でソートされ、文字が同じ（鉢物など）なら単価順になる。
             Dim keyStr As String
-            keyStr = prio & "_" & Right("000000" & numStr, 6) & "_" & cName
+            keyStr = prio & "_" & baseName & "_" & Right("000000" & numStr, 6)
             arrSortKey(iIdx) = keyStr
             iIdx = iIdx + 1
         Next itemKey
         
         ' バブルソート
         Dim k1 As Long, k2 As Long, tKey As String, tItm As String
-        For k1 = 0 To nItems - 2
-            For k2 = k1 + 1 To nItems - 1
-                If arrSortKey(k1) > arrSortKey(k2) Then
-                    tKey = arrSortKey(k1): arrSortKey(k1) = arrSortKey(k2): arrSortKey(k2) = tKey
-                    tItm = arrItem(k1): arrItem(k1) = arrItem(k2): arrItem(k2) = tItm
-                End If
-            Next k2
-        Next k1
+        If nItems > 1 Then
+            For k1 = 0 To nItems - 2
+                For k2 = k1 + 1 To nItems - 1
+                    If arrSortKey(k1) > arrSortKey(k2) Then
+                        tKey = arrSortKey(k1): arrSortKey(k1) = arrSortKey(k2): arrSortKey(k2) = tKey
+                        tItm = arrItem(k1): arrItem(k1) = arrItem(k2): arrItem(k2) = tItm
+                    End If
+                Next k2
+            Next k1
+        End If
 
         ' --- 商品行書き出し ---
         Dim itemIdx As Long: itemIdx = 0
