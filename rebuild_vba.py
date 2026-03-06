@@ -858,7 +858,16 @@ Sub BuildStoreSheet(fd As Variant, fc As Long)
 
     For i = 1 To fc
         Dim storeName As String: storeName = CStr(fd(i, 2))
-        Dim itemName As String:  itemName  = CStr(fd(i, 3))
+        Dim baseItem As String:  baseItem  = CStr(fd(i, 3))
+        Dim priceStr As String:  priceStr  = CStr(fd(i, 4))
+        
+        Dim itemName As String
+        If priceStr <> "" Then
+            itemName = baseItem & priceStr
+        Else
+            itemName = baseItem
+        End If
+
         Dim dateStr As String:   dateStr   = Format(fd(i, 1), "yyyy/mm/dd")
         Dim qty As Long:         qty       = CLng(fd(i, 5))
 
